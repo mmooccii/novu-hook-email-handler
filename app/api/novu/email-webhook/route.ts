@@ -1,13 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { supabase } from '@/lib/supabase';
 
 const NOVU_WEBHOOK_SECRET = process.env.NOVU_WEBHOOK_SECRET!;
-import { createClient } from '@supabase/supabase-js'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-);
 
 export async function POST(request: NextRequest) {
   try {
@@ -47,10 +42,14 @@ export async function POST(request: NextRequest) {
 
     // --- 任意: Supabaseに保存する場合 ---
     const { error } = await supabase.from('NovuWebhookLogs').insert({
-       received_at: new Date().toISOString(),
-       headers: { signature, contentType, userAgent },
-       data: body,
-     })
+      received_at: new Date().toISOString(),
+      headers: { signature, contentType, userAgent },
+      data: body,
+    });
+
+    if (error) {
+      console.error('Failed to persist Novu webhook payload', error);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {
