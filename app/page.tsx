@@ -3,7 +3,22 @@ import { EmailViewer, type EmailLog } from "@/components/email-viewer";
 
 export const revalidate = 0;
 
+async function removeOldEmailLogs() {
+  const cutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { error } = await supabase
+    .from("NovuWebhookLogs")
+    .delete()
+    .lt("received_at", cutoff);
+
+  if (error) {
+    console.error("Failed to purge outdated Novu webhook logs", error);
+  }
+}
+
 async function getEmailLogs(): Promise<EmailLog[]> {
+  await removeOldEmailLogs();
+
   const { data, error } = await supabase
     .from("NovuWebhookLogs")
     .select("id, received_at, data")

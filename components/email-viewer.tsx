@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+import { supabase } from "@/lib/supabase";
 
 export type EmailPayload = {
   to?: unknown;
@@ -15,6 +17,47 @@ export type EmailLog = {
   received_at: string | null;
   data: EmailPayload;
 };
+
+const THREE_DAYS_IN_MS = 3 * 24 * 60 * 60 * 1000;
+
+function getTimestamp(value: string | null): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+
+  const date = new Date(value);
+  const time = date.getTime();
+
+  return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+}
+
+function filterAndSortEmails(emails: EmailLog[]): EmailLog[] {
+  const cutoff = Date.now() - THREE_DAYS_IN_MS;
+  const uniqueEmails = new Map<number, EmailLog>();
+
+  emails.forEach((email) => {
+    uniqueEmails.set(email.id, email);
+  });
+
+  return Array.from(uniqueEmails.values())
+    .filter((email) => {
+      if (!email.received_at) return true;
+      const time = getTimestamp(email.received_at);
+      return time >= cutoff;
+    })
+    .sort((a, b) => getTimestamp(b.received_at) - getTimestamp(a.received_at))
+    .slice(0, 50);
+}
+
+function normalizeEmailLog(entry: {
+  id: number;
+  received_at: string | null;
+  data?: EmailPayload | null;
+}): EmailLog {
+  return {
+    id: entry.id,
+    received_at: entry.received_at,
+    data: (entry.data ?? {}) as EmailPayload,
+  };
+}
 
 function formatRecipient(value: unknown): string {
   if (Array.isArray(value)) {
@@ -63,12 +106,103 @@ type EmailViewerProps = {
 };
 
 export function EmailViewer({ emails }: EmailViewerProps) {
-  const [selectedId, setSelectedId] = useState(emails[0]?.id ?? null);
-
-  const selectedEmail = useMemo(
-    () => emails.find((email) => email.id === selectedId) ?? emails[0],
-    [emails, selectedId],
+  const [localEmails, setLocalEmails] = useState<EmailLog[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(
+    emails[0]?.id ?? null,
   );
+
+  const emailList = useMemo(
+    () => filterAndSortEmails([...emails, ...localEmails]),
+    [emails, localEmails],
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchLatest = async () => {
+      const { data, error } = await supabase
+        .from("NovuWebhookLogs")
+        .select("id, received_at, data")
+        .order("received_at", { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.error("Failed to refresh Novu webhook logs", error);
+        return;
+      }
+
+      if (!isMounted) {
+        return;
+      }
+
+      const normalized = (data ?? []).map((item) =>
+        normalizeEmailLog({
+          id: item.id as number,
+          received_at: item.received_at as string | null,
+          data: (item.data ?? {}) as EmailPayload,
+        }),
+      );
+
+      setLocalEmails(filterAndSortEmails(normalized));
+    };
+
+    void fetchLatest();
+
+    const intervalId = setInterval(fetchLatest, 60_000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("novu-webhook-logs")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "NovuWebhookLogs" },
+        (payload) => {
+          const newRecord = payload.new as {
+            id?: number;
+            received_at?: string | null;
+            data?: EmailPayload | null;
+          };
+
+          if (typeof newRecord?.id !== "number") {
+            return;
+          }
+
+          const normalized = normalizeEmailLog({
+            id: newRecord.id,
+            received_at: newRecord.received_at ?? null,
+            data: newRecord.data ?? {},
+          });
+
+          setLocalEmails((previous) => {
+            const uniqueEmails = new Map<number, EmailLog>();
+
+            previous.forEach((email) => {
+              uniqueEmails.set(email.id, email);
+            });
+
+            uniqueEmails.set(normalized.id, normalized);
+
+            return filterAndSortEmails(Array.from(uniqueEmails.values()));
+          });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const selectedEmail = useMemo(() => {
+    const match = emailList.find((email) => email.id === selectedId);
+    return match ?? emailList[0] ?? null;
+  }, [emailList, selectedId]);
 
   const subject = selectedEmail?.data.subject ?? "(no subject)";
   const from = selectedEmail?.data.from ?? "";
@@ -80,14 +214,14 @@ export function EmailViewer({ emails }: EmailViewerProps) {
       <aside className="md:w-80 lg:w-96 border-b border-zinc-200 bg-white md:h-full md:min-h-dvh md:border-b-0 md:border-r">
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
           <h1 className="text-lg font-semibold text-zinc-900">メール一覧</h1>
-          <span className="text-xs text-zinc-500">{emails.length}件</span>
+          <span className="text-xs text-zinc-500">{emailList.length}件</span>
         </div>
         <div className="max-h-[40vh] overflow-y-auto md:h-[calc(100vh-4.5rem)]">
-          {emails.length === 0 ? (
+          {emailList.length === 0 ? (
             <p className="px-5 py-6 text-sm text-zinc-500">保存されたメールがありません。</p>
           ) : (
             <ul className="divide-y divide-zinc-100">
-              {emails.map((email) => {
+              {emailList.map((email) => {
                 const emailSubject = email.data.subject ?? "(no subject)";
                 const emailFrom = email.data.from ?? "";
                 const emailTo = formatRecipient(email.data.to);
