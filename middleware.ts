@@ -15,13 +15,11 @@ export function middleware(req: NextRequest) {
       const [user, pass] = decoded.split(':')
 
       if (user === BASIC_AUTH_USER && pass === BASIC_AUTH_PASS) {
-        // 認証成功
         return NextResponse.next()
       }
     }
   }
 
-  // 認証失敗 → Basic 認証プロンプトを表示
   return new NextResponse('Auth required', {
     status: 401,
     headers: {
@@ -30,7 +28,9 @@ export function middleware(req: NextRequest) {
   })
 }
 
-// 認証をかけたいパスを指定（例：全ページ）
+// /api を除外した matcher
 export const config = {
-  matcher: ['/:path*'],
+  matcher: [
+    '/((?!api).*)',
+  ],
 }
